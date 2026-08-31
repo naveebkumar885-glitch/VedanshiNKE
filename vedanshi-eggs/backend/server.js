@@ -7,7 +7,7 @@ const multer = require('multer');
 const fs = require('fs');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
 // ===== MIDDLEWARE =====
 app.use(cors());
@@ -20,10 +20,7 @@ if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
 
-// ===== SERVE FRONTEND =====
-app.use(express.static(path.join(__dirname, '..', 'frontend')));
-
-// Serve uploaded images
+// ===== SERVE STATIC FILES =====
 app.use('/uploads', express.static(uploadsDir));
 
 // ===== MONGODB CONNECTION =====
@@ -35,7 +32,7 @@ mongoose.connect(MONGODB_URI)
 
 // ===== SCHEMAS =====
 
-// Egg Schema (Products)
+// Egg Schema
 const eggSchema = new mongoose.Schema({
   name: { type: String, required: true },
   description: { type: String, required: true },
@@ -71,18 +68,16 @@ const Order = mongoose.model('Order', orderSchema);
 function adminAuth(req, res, next) {
   const adminPass = req.headers['x-admin-pass'];
   const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
-  
+
   if (adminPass !== ADMIN_PASSWORD) {
     return res.status(403).json({ error: 'Invalid admin credentials' });
   }
   next();
 }
 
-// ===== IMAGE UPLOAD CONFIGURATION (Multer) =====
+// ===== IMAGE UPLOAD (MULTER) =====
 const multerStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadsDir);
-  },
+  destination: (req, file, cb) => cb(null, uploadsDir),
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
     const ext = path.extname(file.originalname);
@@ -92,62 +87,29 @@ const multerStorage = multer.diskStorage({
 
 const upload = multer({
   storage: multerStorage,
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
   fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only image files are allowed!'), false);
-    }
+    if (file.mimetype.startsWith('image/')) cb(null, true);
+    else cb(new Error('Only images allowed'), false);
   }
 });
 
-// ===== PUBLIC PAGE ROUTES =====
-
-// Homepage
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, '..', 'frontend', 'index.html'));
-});
-
-// Order page
-app.get('/order', (req, res) => {
-  res.sendFile(path.join(__dirname, '..', 'frontend', 'order.html'));
-});
-
-// Admin page
-app.get('/admin', (req, res) => {
-  res.sendFile(path.join(__dirname, '..', 'frontend', 'admin.html'));
-});
-
-// ===== ADMIN AUTH ROUTES =====
-
-// Verify admin password
+// ===== ADMIN VERIFY =====
 app.post('/api/admin/verify', (req, res) => {
   const { password } = req.body;
   const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
-  
-  if (password === ADMIN_PASSWORD) {
-    res.json({ valid: true });
-  } else {
-    res.status(401).json({ valid: false, error: 'Invalid password' });
-  }
+  if (password === ADMIN_PASSWORD) res.json({ valid: true });
+  else res.status(401).json({ valid: false, error: 'Invalid password' });
 });
 
 // ===== IMAGE UPLOAD ROUTE =====
-
-// Upload image (Admin only)
 app.post('/api/upload', adminAuth, upload.single('image'), (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No image file provided' });
-    }
-    
+    if (!req.file) return res.status(400).json({ error: 'No image file provided' });
     const imageUrl = `/uploads/${req.file.filename}`;
-    console.log('📸 Image uploaded:', imageUrl);
     res.json({ url: imageUrl });
   } catch (error) {
-    console.error('Upload error:', error);
-    res.status(500).json({ error: 'Failed to upload image' });
+    res.status(500).json({ error: 'Upload failed' });
   }
 });
 
@@ -178,20 +140,11 @@ app.get('/api/eggs/:id', async (req, res) => {
 app.post('/api/admin/eggs', adminAuth, async (req, res) => {
   try {
     const { name, description, price, imageUrl } = req.body;
-    
     if (!name || !description || !price || !imageUrl) {
-      return res.status(400).json({ error: 'All fields are required' });
+      return res.status(400).json({ error: 'All fields required' });
     }
-    
-    const egg = new Egg({
-      name,
-      description,
-      price: parseFloat(price),
-      imageUrl
-    });
-    
+    const egg = new Egg({ name, description, price: parseFloat(price), imageUrl });
     await egg.save();
-    console.log('✅ Product saved to MongoDB:', egg.name);
     res.status(201).json(egg);
   } catch (error) {
     res.status(500).json({ error: 'Failed to create egg' });
@@ -203,16 +156,10 @@ app.delete('/api/admin/eggs/:id', adminAuth, async (req, res) => {
   try {
     const egg = await Egg.findByIdAndDelete(req.params.id);
     if (!egg) return res.status(404).json({ error: 'Egg not found' });
-    
-    // Delete associated image file
     if (egg.imageUrl && egg.imageUrl.startsWith('/uploads/')) {
-      const filename = path.basename(egg.imageUrl);
-      const filePath = path.join(uploadsDir, filename);
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-      }
+      const filePath = path.join(uploadsDir, path.basename(egg.imageUrl));
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
     }
-    
     res.status(204).send();
   } catch (error) {
     res.status(500).json({ error: 'Failed to delete egg' });
@@ -232,39 +179,26 @@ app.post('/api/orders', async (req, res) => {
 
     if (!productId || !productName || !productPrice || !quantity || !totalAmount ||
         !customerName || !customerPhone || !deliveryAddress || !deliveryCity || !deliveryPincode) {
-      return res.status(400).json({ error: 'All required fields must be filled' });
+      return res.status(400).json({ error: 'All required fields' });
     }
 
-    const phoneRegex = /^[0-9]{10}$/;
-    if (!phoneRegex.test(customerPhone)) {
-      return res.status(400).json({ error: 'Please enter a valid 10-digit phone number' });
+    if (!/^[0-9]{10}$/.test(customerPhone)) {
+      return res.status(400).json({ error: 'Invalid phone number' });
     }
 
-    const pincodeRegex = /^[0-9]{6}$/;
-    if (!pincodeRegex.test(deliveryPincode)) {
-      return res.status(400).json({ error: 'Please enter a valid 6-digit pincode' });
+    if (!/^[0-9]{6}$/.test(deliveryPincode)) {
+      return res.status(400).json({ error: 'Invalid pincode' });
     }
 
-    const orderNumber = 'ORD-' + Date.now().toString().slice(-8) + '-' + Math.floor(Math.random() * 1000);
-
+    const orderNumber = 'ORD-' + Date.now().toString().slice(-8);
     const order = new Order({
-      orderNumber,
-      productId,
-      productName,
-      productPrice,
-      quantity,
-      totalAmount,
-      customerName,
-      customerPhone,
-      customerEmail: customerEmail || '',
-      deliveryAddress,
-      deliveryCity,
-      deliveryPincode,
+      orderNumber, productId, productName, productPrice, quantity, totalAmount,
+      customerName, customerPhone, customerEmail: customerEmail || '',
+      deliveryAddress, deliveryCity, deliveryPincode,
       specialInstructions: specialInstructions || ''
     });
 
     await order.save();
-    console.log('✅ Order saved:', orderNumber);
     res.status(201).json(order);
   } catch (error) {
     res.status(500).json({ error: 'Failed to place order' });
@@ -285,17 +219,14 @@ app.get('/api/orders', adminAuth, async (req, res) => {
 app.put('/api/admin/orders/:id/status', adminAuth, async (req, res) => {
   try {
     const { status } = req.body;
-    
     if (!['pending', 'confirmed', 'delivered', 'cancelled'].includes(status)) {
       return res.status(400).json({ error: 'Invalid status' });
     }
-
     const order = await Order.findByIdAndUpdate(req.params.id, { status }, { new: true });
     if (!order) return res.status(404).json({ error: 'Order not found' });
-    
     res.json(order);
   } catch (error) {
-    res.status(500).json({ error: 'Failed to update order status' });
+    res.status(500).json({ error: 'Failed to update' });
   }
 });
 
@@ -306,24 +237,15 @@ app.delete('/api/admin/orders/:id', adminAuth, async (req, res) => {
     if (!order) return res.status(404).json({ error: 'Order not found' });
     res.status(204).send();
   } catch (error) {
-    res.status(500).json({ error: 'Failed to delete order' });
+    res.status(500).json({ error: 'Failed to delete' });
   }
 });
 
 // ===== HEALTH CHECK =====
-app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected'
-  });
-});
+app.get('/', (req, res) => res.json({ status: 'ok' }));
+app.get('/api/health', (req, res) => res.json({ status: 'ok', db: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected' }));
 
 // ===== START SERVER =====
 app.listen(PORT, () => {
-  console.log('=========================================');
-  console.log('🚀 Server running on http://localhost:' + PORT);
-  console.log('=========================================');
-  console.log('🌐 Website: http://localhost:' + PORT);
-  console.log('🔐 Admin: http://localhost:' + PORT + '/admin');
-  console.log('=========================================');
+  console.log(`🚀 Server running on port ${PORT}`);
 });
